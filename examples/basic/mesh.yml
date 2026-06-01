@@ -1,0 +1,15 @@
+services:
+  app: 3000
+  api: 4000
+
+rules:
+  api:
+    - path: /users
+      status: 500
+      rate: 40
+    - path: /auth/login
+      status: 401
+      rate: 25
+    - path: /slow
+      delay: 2000
+      rate: 100

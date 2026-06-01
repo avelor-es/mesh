@@ -1,0 +1,19 @@
+services:
+  app:    3000
+  api:    4000
+  admin:  4001
+  worker: 4002
+
+rules:
+  api:
+    - path: /payments
+      status: 503
+      delay: 1200
+      rate: 35
+    - path: /orders
+      status: 500
+      rate: 20
+  worker:
+    - path: /jobs
+      status: 429
+      rate: 40
