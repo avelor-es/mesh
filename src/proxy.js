@@ -3,6 +3,7 @@ import https            from 'https'
 import { readFileSync } from 'fs'
 import httpProxy        from 'http-proxy'
 import { matchRule, applyRule } from './rules.js'
+import { wantsHtml, errorPage } from './error-page.js'
 
 const RESET  = '\x1b[0m'
 const DIM    = '\x1b[2m'
@@ -15,11 +16,17 @@ export function startProxy(services, rules, certs = null) {
   const proxy = httpProxy.createProxyServer({ xfwd: true })
 
   proxy.on('error', (err, req, res) => {
-    const host = req.headers.host?.split('.')[0] ?? '?'
-    log(RED, 'ERR', host, req.url, `→ ${err.code ?? err.message}`)
+    const { name, target } = resolveService(req.headers.host)
+    log(RED, 'ERR', name, req.url, `→ ${err.code ?? err.message}`)
     if (!res.headersSent) {
-      res.writeHead(502, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Service unavailable', service: host }))
+      const protocol = certs ? 'https' : 'http'
+      if (wantsHtml(req)) {
+        res.writeHead(502, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(errorPage(502, name, { port: target, protocol }))
+      } else {
+        res.writeHead(502, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: 'Service unavailable', service: name }))
+      }
     }
   })
 
@@ -33,14 +40,20 @@ export function startProxy(services, rules, certs = null) {
     const { name, target } = resolveService(req.headers.host)
 
     if (!target) {
-      res.writeHead(404, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: `Unknown service: ${name}` }))
+      const protocol = certs ? 'https' : 'http'
+      if (wantsHtml(req)) {
+        res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(errorPage(404, name, { services, protocol }))
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' })
+        res.end(JSON.stringify({ error: `Unknown service: ${name}` }))
+      }
       return
     }
 
     const pathname = new URL(req.url, 'http://x').pathname
 
-    const rule = matchRule(rules, name, pathname)
+    const rule = matchRule(rules, name, pathname, req.method)
 
     if (rule) {
       const injected = await applyRule(rule, res)
@@ -122,8 +135,9 @@ function onReady(services, rules, certs) {
     console.log('')
     for (const [svc, ruleList] of Object.entries(rules)) {
       for (const r of ruleList) {
-        const type = r.status ? `${r.status}` : `${r.delay}ms delay`
-        console.log(`  ${YELLOW}${svc}${r.path}${RESET}  ${DIM}${r.rate}% → ${type}${RESET}`)
+        const type      = r.status ? `${r.status}` : `${r.delay}ms delay`
+        const methodStr = r.method ? `${r.method} ` : ''
+        console.log(`  ${YELLOW}${svc}${r.path}${RESET}  ${DIM}${methodStr}${r.rate}% → ${type}${RESET}`)
       }
     }
   }

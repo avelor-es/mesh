@@ -2,7 +2,8 @@ import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import yaml from 'js-yaml'
 
-const NAME_RE = /^[a-z0-9][a-z0-9.-]*$/
+const NAME_RE    = /^[a-z0-9][a-z0-9.-]*$/
+const METHODS    = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS'])
 
 export function findConfigFile(cwd = process.cwd()) {
   for (const name of ['mesh.yml', 'mesh.yaml']) {
@@ -53,11 +54,16 @@ export function loadConfig(cwdOrFile = process.cwd()) {
       if (r.delay !== undefined && (typeof r.delay !== 'number' || r.delay < 0)) {
         throw new Error(`${prefix}.delay must be a positive number`)
       }
+      if (r.method !== undefined && !METHODS.has(r.method.toUpperCase())) {
+        throw new Error(`${prefix}.method must be a valid HTTP method (GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS)`)
+      }
       return {
         path:   r.path   ?? '/',
+        method: r.method ? r.method.toUpperCase() : null,
         status: r.status ?? null,
         delay:  r.delay  ?? null,
         rate:   r.rate   ?? 100,
+        body:   r.body   ?? null,
       }
     })
   }

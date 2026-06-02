@@ -1,9 +1,10 @@
-export function matchRule(rules, serviceName, pathname) {
+export function matchRule(rules, serviceName, pathname, method) {
   const serviceRules = rules[serviceName]
   if (!serviceRules) return null
 
   for (const rule of serviceRules) {
     if (!pathname.startsWith(rule.path)) continue
+    if (rule.method && rule.method !== method.toUpperCase()) continue
     if (rule.rate === 0) continue
     if (Math.random() * 100 > rule.rate) continue
     return rule
@@ -16,8 +17,12 @@ export function applyRule(rule, res) {
   return new Promise(resolve => {
     const respond = () => {
       if (rule.status) {
-        res.writeHead(rule.status, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ error: statusText(rule.status), injected: true }))
+        const body  = rule.body ?? { error: statusText(rule.status), injected: true }
+        const isObj = typeof body !== 'string'
+        const raw   = isObj ? JSON.stringify(body) : body
+        const type  = isObj ? 'application/json' : 'text/plain'
+        res.writeHead(rule.status, { 'Content-Type': type })
+        res.end(raw)
       }
       resolve(rule.status != null)
     }

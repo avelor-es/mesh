@@ -25,11 +25,14 @@ Requires Node.js 18+. For HTTPS, install [mkcert](https://github.com/FiloSottile
 ## Usage
 
 ```bash
-mesh init        # create mesh.yml in current directory
-sudo mesh route  # start proxy (writes /etc/hosts)
+mesh init         # create mesh.yml in current directory
+sudo mesh start   # start proxy in background
+mesh status       # show running services
+sudo mesh stop    # stop the proxy
+sudo mesh route   # start in foreground (useful for debugging)
 ```
 
-`mesh route` starts on `:80` and `:443` (if mkcert is available), writes the hostname entries to `/etc/hosts`, and cleans them up on exit.
+`mesh start` runs on `:80` and `:443` (if mkcert is available), writes the hostname entries to `/etc/hosts`, and cleans them up automatically on stop.
 
 ---
 
@@ -56,7 +59,11 @@ services:
 rules:
   api:
     - path: /payments
+      method: POST
       status: 503
+      body:
+        error: Payment service unavailable
+        retryAfter: 30
       rate: 30
     - path: /auth/login
       status: 401
@@ -70,14 +77,16 @@ rules:
       rate: 25
 ```
 
-| Field    | Description                                      |
-|----------|--------------------------------------------------|
-| `path`   | Request path prefix to match                     |
-| `status` | HTTP status code to return (400, 401, 500, etc.) |
-| `delay`  | Milliseconds to wait before responding           |
-| `rate`   | Percentage of matching requests to affect (1–100)|
+| Field    | Description                                                   |
+|----------|---------------------------------------------------------------|
+| `path`   | Request path prefix to match                                  |
+| `method` | HTTP method to match (GET, POST, PUT, PATCH, DELETE…)         |
+| `status` | HTTP status code to return (400, 401, 500, etc.)              |
+| `body`   | Response body — object (sent as JSON) or string (plain text)  |
+| `delay`  | Milliseconds to wait before responding                        |
+| `rate`   | Percentage of matching requests to affect (1–100)             |
 
-`status` and `delay` can be combined: wait N ms, then fail with that status.
+`status` and `delay` can be combined: wait N ms, then fail with that status. Without `body`, the default is `{ "error": "<status text>", "injected": true }`.
 
 ### Subdomains
 
