@@ -2,6 +2,8 @@
 
 Local dev proxy. Named services instead of ports. Failure injection without mocks.
 
+![demo](demo.gif)
+
 ```
 app.test   → :3000
 api.test   → :4000
