@@ -8,7 +8,7 @@ export function writeHosts(services, hostsFile = HOSTS_FILE) {
   const current = readFileSync(hostsFile, 'utf8')
   const clean   = removeMeshBlock(current)
   const entries = Object.keys(services)
-    .map(name => `127.0.0.1 ${name}.test`)
+    .flatMap(name => [`127.0.0.1 ${name}.test`, `::1 ${name}.test`])
     .join('\n')
   const next = `${clean.trimEnd()}\n\n${MESH_START}\n${entries}\n${MESH_END}\n`
   writeFileSync(hostsFile, next, 'utf8')
