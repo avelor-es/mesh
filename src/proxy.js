@@ -1,9 +1,30 @@
 import http             from 'http'
 import https            from 'https'
+import net              from 'net'
 import { readFileSync } from 'fs'
 import httpProxy        from 'http-proxy'
 import { matchRule, applyRule } from './rules.js'
 import { wantsHtml, errorPage } from './error-page.js'
+
+const hostCache = new Map()
+
+function probeHost(port) {
+  if (hostCache.has(port)) return Promise.resolve(hostCache.get(port))
+  const probe = addr => new Promise((resolve, reject) => {
+    const s = net.connect(port, addr)
+    s.setTimeout(200)
+    s.on('connect', () => { s.destroy(); resolve(addr) })
+    s.on('timeout',  () => { s.destroy(); reject(new Error('timeout')) })
+    s.on('error', reject)
+  })
+  return Promise.any([probe('127.0.0.1'), probe('::1')])
+    .then(host => { hostCache.set(port, host); return host })
+    .catch(() => '127.0.0.1')
+}
+
+function fmtHost(host) {
+  return host.includes(':') ? `[${host}]` : host
+}
 
 const RESET  = '\x1b[0m'
 const DIM    = '\x1b[2m'
@@ -65,14 +86,16 @@ export function startProxy(services, rules, certs = null) {
       log(YELLOW, `${rule.delay}ms`, name, pathname, `→ :${target} (delayed)`)
     }
 
-    proxy.web(req, res, { target: `http://127.0.0.1:${target}` })
+    const host = await probeHost(target)
+    proxy.web(req, res, { target: `http://${fmtHost(host)}:${target}` })
     if (!rule) log(DIM, '→', name, pathname, `→ :${target}`)
   }
 
-  function handleUpgrade(req, socket, head) {
+  async function handleUpgrade(req, socket, head) {
     const { name, target } = resolveService(req.headers.host)
     if (!target) { socket.destroy(); return }
-    proxy.ws(req, socket, head, { target: `ws://127.0.0.1:${target}` }, err => {
+    const host = await probeHost(target)
+    proxy.ws(req, socket, head, { target: `ws://${fmtHost(host)}:${target}` }, err => {
       if (err) log(RED, 'WSE', name, req.url, `→ ${err.code ?? err.message}`)
     })
     log(DIM, 'WS', name, req.url, `→ :${target}`)
@@ -98,7 +121,7 @@ export function startProxy(services, rules, certs = null) {
     throw err
   })
 
-  httpServer.listen(80, '127.0.0.1', () => onReady(services, rules, certs))
+  httpServer.listen(80, '::', () => onReady(services, rules, certs))
 
   let httpsServer = null
 
@@ -115,7 +138,7 @@ export function startProxy(services, rules, certs = null) {
       }
       throw err
     })
-    httpsServer.listen(443, '127.0.0.1')
+    httpsServer.listen(443, '::')
   }
 
   return { http: httpServer, https: httpsServer }

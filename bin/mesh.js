@@ -14,6 +14,7 @@ const STATE_FILE = '/tmp/.mesh.json'
 const RESET  = '\x1b[0m'
 const DIM    = '\x1b[2m'
 const GREEN  = '\x1b[32m'
+const YELLOW = '\x1b[33m'
 const CYAN   = '\x1b[36m'
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
@@ -57,9 +58,36 @@ if (cmd === 'start') {
     detached: true,
     stdio:    'ignore',
   })
-  child.unref()
-  console.log(`mesh: started (pid ${child.pid})`)
-  process.exit(0)
+
+  const pid      = child.pid
+  const deadline = Date.now() + 5000
+
+  ;(function poll() {
+    let alive = true
+    try { process.kill(pid, 0) } catch (e) { if (e.code !== 'EPERM') alive = false }
+
+    if (!alive) {
+      console.error('mesh: failed to start — check your mesh.yml and that ports 80/443 are free')
+      process.exit(1)
+    }
+
+    try {
+      const state = JSON.parse(readFileSync(STATE_FILE, 'utf8'))
+      if (state.pid === pid) {
+        child.unref()
+        console.log(`mesh: started (pid ${pid})`)
+        process.exit(0)
+      }
+    } catch { /* not ready yet */ }
+
+    if (Date.now() >= deadline) {
+      child.kill()
+      console.error('mesh: timed out waiting for proxy to start')
+      process.exit(1)
+    }
+
+    setTimeout(poll, 50)
+  })()
 }
 
 if (cmd === 'stop') {
@@ -120,6 +148,17 @@ if (cmd === 'status') {
   for (const [name, port] of Object.entries(state.services)) {
     console.log(`  ${GREEN}${name.padEnd(pad)}.test${RESET}  ${DIM}→ :${port}  ${protocol}://${name}.test${RESET}`)
   }
+  const rules = state.rules ?? {}
+  if (Object.keys(rules).length) {
+    console.log('')
+    for (const [svc, ruleList] of Object.entries(rules)) {
+      for (const r of ruleList) {
+        const type      = r.status ? `${r.status}` : `${r.delay}ms delay`
+        const methodStr = r.method ? `${r.method} ` : ''
+        console.log(`  ${YELLOW}${svc}${r.path}${RESET}  ${DIM}${methodStr}${r.rate}% → ${type}${RESET}`)
+      }
+    }
+  }
   console.log('')
   process.exit(0)
 }
@@ -160,7 +199,7 @@ const configDir = dirname(resolve(configPath))
 const certs     = ensureCerts(services, configDir)
 const servers   = startProxy(services, rules, certs)
 
-writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, https: !!certs }))
+writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, rules, https: !!certs }))
 
 // ── Crash safety — clean /etc/hosts even on unexpected exit ───────────────────
 
@@ -202,7 +241,7 @@ watch(configPath, () => {
       Object.assign(rules, next.rules)
 
       writeHosts(services)
-      writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, https: !!certs }))
+      writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, rules, https: !!certs }))
 
       if (certs && hasNewServices) {
         const newCerts = ensureCerts(services, configDir)
