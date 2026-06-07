@@ -28,10 +28,10 @@ Requires Node.js 18+. For HTTPS, install [mkcert](https://github.com/FiloSottile
 
 ```bash
 mesh init         # create mesh.yml in current directory
-sudo mesh start   # start proxy in background
+mesh start        # start proxy in background (will prompt for sudo)
 mesh status       # show running services
-sudo mesh stop    # stop the proxy
-sudo mesh route   # start in foreground (useful for debugging)
+mesh stop         # stop the proxy
+mesh route        # start in foreground (useful for debugging)
 ```
 
 `mesh start` runs on `:80` and `:443` (if mkcert is available), writes the hostname entries to `/etc/hosts`, and cleans them up automatically on stop.
@@ -138,7 +138,7 @@ cd examples/basic
 node app.js
 
 # terminal 3 (from examples/basic)
-sudo mesh route
+mesh route
 ```
 
 Then open `https://app.test`.

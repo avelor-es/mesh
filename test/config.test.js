@@ -145,8 +145,19 @@ describe('loadConfig — validation errors', () => {
     assert.throws(() => loadConfig(dir), /invalid port/)
   })
 
-  test('throws on non-numeric port', () => {
-    writeYml(dir, 'services:\n  app: "three-thousand"\n')
+  test('accepts command string as service', () => {
+    writeYml(dir, 'services:\n  app: "astro dev"\n')
+    const { services } = loadConfig(dir)
+    assert.strictEqual(services.app, 'astro dev')
+  })
+
+  test('throws on empty command string', () => {
+    writeYml(dir, 'services:\n  app: ""\n')
+    assert.throws(() => loadConfig(dir), /command cannot be empty/)
+  })
+
+  test('throws on boolean service value', () => {
+    writeYml(dir, 'services:\n  app: true\n')
     assert.throws(() => loadConfig(dir), /invalid port/)
   })
 

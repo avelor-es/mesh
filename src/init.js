@@ -39,5 +39,5 @@ export function init(cwd = process.cwd()) {
     }
   }
 
-  console.log('      edit your services and run: sudo mesh route')
+  console.log('      edit your services and run: mesh route')
 }

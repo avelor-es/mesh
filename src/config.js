@@ -33,11 +33,17 @@ export function loadConfig(cwdOrFile = process.cwd()) {
     if (!NAME_RE.test(name)) {
       throw new Error(`invalid service name "${name}" — only a-z, 0-9, hyphens and dots allowed`)
     }
-    const port = Number(raw)
-    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    if (typeof raw === 'string') {
+      if (!raw.trim()) throw new Error(`service "${name}" command cannot be empty`)
+      services[name] = raw.trim()
+    } else if (typeof raw === 'number') {
+      if (!Number.isInteger(raw) || raw < 1 || raw > 65535) {
+        throw new Error(`invalid port for service "${name}": ${raw}`)
+      }
+      services[name] = raw
+    } else {
       throw new Error(`invalid port for service "${name}": ${raw}`)
     }
-    services[name] = port
   }
 
   const rules = {}

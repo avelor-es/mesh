@@ -8,6 +8,7 @@ import { writeHosts, removeHosts } from '../src/hosts.js'
 import { startProxy }              from '../src/proxy.js'
 import { ensureCerts }             from '../src/certs.js'
 import { init }                    from '../src/init.js'
+import { findFreePort, startServices } from '../src/services.js'
 
 const STATE_FILE = '/tmp/.mesh.json'
 
@@ -179,81 +180,105 @@ if (cmd !== 'route') {
 
 autoSudo()
 
-// ── Load config ───────────────────────────────────────────────────────────────
+// ── Load config + start managed services ─────────────────────────────────────
 
-let config
-try {
-  config = loadConfig(configArg ?? process.cwd())
-} catch (err) {
-  console.error('mesh:', err.message)
-  process.exit(1)
-}
+;(async () => {
+  let config
+  try {
+    config = loadConfig(configArg ?? process.cwd())
+  } catch (err) {
+    console.error('mesh:', err.message)
+    process.exit(1)
+  }
 
-const { services, rules, configPath } = config
+  const { services: rawServices, rules, configPath } = config
 
-writeHosts(services)
+  // Split into managed (command string) and static (port number) services.
+  // For managed services, find a guaranteed-free port and inject it via PORT env.
+  const managed  = {} // { [name]: { command, port } }
+  const services = {} // { [name]: port } — always numbers from here on
 
-const configDir = dirname(resolve(configPath))
-const certs     = ensureCerts(services, configDir)
-const servers   = startProxy(services, rules, certs)
-
-writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, rules, https: !!certs }))
-
-// ── Crash safety — clean /etc/hosts even on unexpected exit ───────────────────
-
-function shutdown(code = 0) {
-  removeHosts()
-  try { unlinkSync(STATE_FILE) } catch {}
-  servers.http.close()
-  servers.https?.close()
-  process.exit(code)
-}
-
-process.on('SIGINT',  () => { console.log('\n  mesh  cleaning up...'); shutdown(0) })
-process.on('SIGTERM', () => shutdown(0))
-
-process.on('uncaughtException', err => {
-  console.error('\n  mesh  uncaught exception:', err.message)
-  shutdown(1)
-})
-
-process.on('unhandledRejection', err => {
-  console.error('\n  mesh  unhandled rejection:', err?.message ?? err)
-  shutdown(1)
-})
-
-// ── Hot-reload ────────────────────────────────────────────────────────────────
-
-let reloadTimer
-watch(configPath, () => {
-  clearTimeout(reloadTimer)
-  reloadTimer = setTimeout(() => {
-    try {
-      const next = loadConfig(configPath)
-
-      const hasNewServices = Object.keys(next.services).some(k => !services[k])
-
-      Object.keys(services).forEach(k => delete services[k])
-      Object.assign(services, next.services)
-      Object.keys(rules).forEach(k => delete rules[k])
-      Object.assign(rules, next.rules)
-
-      writeHosts(services)
-      writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, rules, https: !!certs }))
-
-      if (certs && hasNewServices) {
-        const newCerts = ensureCerts(services, configDir)
-        if (newCerts && servers.https) {
-          servers.https.setSecureContext({
-            cert: readFileSync(newCerts.certFile),
-            key:  readFileSync(newCerts.keyFile),
-          })
-        }
-      }
-
-      console.log('\n  mesh  config reloaded\n')
-    } catch (err) {
-      console.error('\n  mesh  config reload failed:', err.message, '\n')
+  for (const [name, value] of Object.entries(rawServices)) {
+    if (typeof value === 'string') {
+      const port     = await findFreePort()
+      managed[name]  = { command: value, port }
+      services[name] = port
+    } else {
+      services[name] = value
     }
-  }, 100)
-})
+  }
+
+  const serviceManager = startServices(managed)
+
+  writeHosts(services)
+
+  const configDir = dirname(resolve(configPath))
+  const certs     = ensureCerts(services, configDir)
+  const servers   = startProxy(services, rules, certs)
+
+  writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, rules, https: !!certs }))
+
+  // ── Crash safety — clean /etc/hosts even on unexpected exit ─────────────────
+
+  function shutdown(code = 0) {
+    serviceManager.stop()
+    removeHosts()
+    try { unlinkSync(STATE_FILE) } catch {}
+    servers.http.close()
+    servers.https?.close()
+    process.exit(code)
+  }
+
+  process.on('SIGINT',  () => { console.log('\n  mesh  cleaning up...'); shutdown(0) })
+  process.on('SIGTERM', () => shutdown(0))
+
+  process.on('uncaughtException', err => {
+    console.error('\n  mesh  uncaught exception:', err.message)
+    shutdown(1)
+  })
+
+  process.on('unhandledRejection', err => {
+    console.error('\n  mesh  unhandled rejection:', err?.message ?? err)
+    shutdown(1)
+  })
+
+  // ── Hot-reload ───────────────────────────────────────────────────────────────
+  // Managed service ports are fixed at startup — only static ports and rules reload.
+
+  let reloadTimer
+  watch(configPath, () => {
+    clearTimeout(reloadTimer)
+    reloadTimer = setTimeout(() => {
+      try {
+        const next = loadConfig(configPath)
+
+        const hasNewServices = Object.keys(next.services).some(k => !services[k])
+
+        Object.keys(services).forEach(k => delete services[k])
+        for (const [name, value] of Object.entries(next.services)) {
+          // Preserve the already-assigned port for managed services
+          services[name] = managed[name]?.port ?? (typeof value === 'number' ? value : services[name])
+        }
+        Object.keys(rules).forEach(k => delete rules[k])
+        Object.assign(rules, next.rules)
+
+        writeHosts(services)
+        writeFileSync(STATE_FILE, JSON.stringify({ pid: process.pid, configPath, services, rules, https: !!certs }))
+
+        if (certs && hasNewServices) {
+          const newCerts = ensureCerts(services, configDir)
+          if (newCerts && servers.https) {
+            servers.https.setSecureContext({
+              cert: readFileSync(newCerts.certFile),
+              key:  readFileSync(newCerts.keyFile),
+            })
+          }
+        }
+
+        console.log('\n  mesh  config reloaded\n')
+      } catch (err) {
+        console.error('\n  mesh  config reload failed:', err.message, '\n')
+      }
+    }, 100)
+  })
+})()

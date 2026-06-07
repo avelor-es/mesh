@@ -6,20 +6,36 @@ import httpProxy        from 'http-proxy'
 import { matchRule, applyRule } from './rules.js'
 import { wantsHtml, errorPage } from './error-page.js'
 
-const hostCache = new Map()
+// Maps configuredPort → { host, port } — cleared on ECONNREFUSED so next
+// request re-discovers if the service moved to a different port.
+const endpointCache = new Map()
+const SCAN_RANGE = 10
 
-function probeHost(port) {
-  if (hostCache.has(port)) return Promise.resolve(hostCache.get(port))
+function probePort(port) {
   const probe = addr => new Promise((resolve, reject) => {
     const s = net.connect(port, addr)
-    s.setTimeout(200)
+    s.setTimeout(100)
     s.on('connect', () => { s.destroy(); resolve(addr) })
-    s.on('timeout',  () => { s.destroy(); reject(new Error('timeout')) })
+    s.on('timeout',  () => { s.destroy(); reject() })
     s.on('error', reject)
   })
-  return Promise.any([probe('127.0.0.1'), probe('::1')])
-    .then(host => { hostCache.set(port, host); return host })
-    .catch(() => '127.0.0.1')
+  return Promise.any([probe('127.0.0.1'), probe('::1')]).catch(() => null)
+}
+
+async function resolveEndpoint(configuredPort) {
+  const cached = endpointCache.get(configuredPort)
+  if (cached) return cached
+
+  // Probe configured port and the next SCAN_RANGE ports concurrently.
+  // results preserves order so .find() returns the closest open port.
+  const candidates = Array.from({ length: SCAN_RANGE + 1 }, (_, i) => configuredPort + i)
+  const results    = await Promise.all(
+    candidates.map(port => probePort(port).then(host => host ? { host, port } : null))
+  )
+
+  const found = results.find(r => r !== null) ?? { host: '127.0.0.1', port: configuredPort }
+  endpointCache.set(configuredPort, found)
+  return found
 }
 
 function fmtHost(host) {
@@ -38,6 +54,9 @@ export function startProxy(services, rules, certs = null) {
 
   proxy.on('error', (err, req, res) => {
     const { name, target } = resolveService(req.headers.host)
+    if (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET') {
+      endpointCache.delete(target)
+    }
     log(RED, 'ERR', name, req.url, `→ ${err.code ?? err.message}`)
     if (!res.headersSent) {
       const protocol = certs ? 'https' : 'http'
@@ -86,19 +105,24 @@ export function startProxy(services, rules, certs = null) {
       log(YELLOW, `${rule.delay}ms`, name, pathname, `→ :${target} (delayed)`)
     }
 
-    const host = await probeHost(target)
-    proxy.web(req, res, { target: `http://${fmtHost(host)}:${target}` })
-    if (!rule) log(DIM, '→', name, pathname, `→ :${target}`)
+    const endpoint = await resolveEndpoint(target)
+    proxy.web(req, res, { target: `http://${fmtHost(endpoint.host)}:${endpoint.port}` })
+    if (!rule) {
+      const portLabel = endpoint.port !== target
+        ? `:${endpoint.port} ${DIM}(shifted from :${target})${RESET}`
+        : `:${target}`
+      log(DIM, '→', name, pathname, `→ ${portLabel}`)
+    }
   }
 
   async function handleUpgrade(req, socket, head) {
     const { name, target } = resolveService(req.headers.host)
     if (!target) { socket.destroy(); return }
-    const host = await probeHost(target)
-    proxy.ws(req, socket, head, { target: `ws://${fmtHost(host)}:${target}` }, err => {
+    const endpoint = await resolveEndpoint(target)
+    proxy.ws(req, socket, head, { target: `ws://${fmtHost(endpoint.host)}:${endpoint.port}` }, err => {
       if (err) log(RED, 'WSE', name, req.url, `→ ${err.code ?? err.message}`)
     })
-    log(DIM, 'WS', name, req.url, `→ :${target}`)
+    log(DIM, 'WS', name, req.url, `→ :${endpoint.port}`)
   }
 
   const httpServer = http.createServer((req, res) => {
