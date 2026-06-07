@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { watch, existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
-import { spawn }                           from 'child_process'
+import { spawn, spawnSync }                from 'child_process'
 import { dirname, resolve }                from 'path'
 import { createRequire }                   from 'module'
 import { loadConfig }              from '../src/config.js'
@@ -10,6 +10,14 @@ import { ensureCerts }             from '../src/certs.js'
 import { init }                    from '../src/init.js'
 
 const STATE_FILE = '/tmp/.mesh.json'
+
+// Re-exec the current command under sudo if not already root.
+// Uses sudo -E to preserve PATH so mkcert and other tools remain findable.
+function autoSudo() {
+  if (process.getuid?.() === 0) return
+  const result = spawnSync('sudo', ['-E', process.execPath, ...process.argv.slice(1)], { stdio: 'inherit' })
+  process.exit(result.status ?? 1)
+}
 
 const RESET  = '\x1b[0m'
 const DIM    = '\x1b[2m'
@@ -42,16 +50,12 @@ if (cmd === 'start') {
     let alive = false
     try { process.kill(state.pid, 0); alive = true } catch (e) { if (e.code === 'EPERM') alive = true }
     if (alive) {
-      console.error(`mesh: already running (pid ${state.pid}) — run sudo mesh stop first`)
+      console.error(`mesh: already running (pid ${state.pid}) — run mesh stop first`)
       process.exit(1)
     }
   } catch { /* not running */ }
 
-  if (process.getuid?.() !== 0) {
-    console.error('mesh: requires sudo to bind ports 80/443')
-    console.error('      sudo mesh start')
-    process.exit(1)
-  }
+  autoSudo()
 
   const forwardArgs = args.filter(a => a !== 'start')
   const child = spawn(process.execPath, [process.argv[1], 'route', ...forwardArgs], {
@@ -103,8 +107,7 @@ if (cmd === 'stop') {
     console.log(`mesh: stopped (pid ${state.pid})`)
   } catch (err) {
     if (err.code === 'EPERM') {
-      console.error(`mesh: permission denied — try: sudo mesh stop`)
-      process.exit(1)
+      autoSudo()
     }
     if (err.code === 'ESRCH') {
       try { unlinkSync(STATE_FILE) } catch {}
@@ -165,21 +168,16 @@ if (cmd === 'status') {
 
 if (cmd !== 'route') {
   console.error('Usage:')
-  console.error('  mesh init                        create mesh.yml in current directory')
-  console.error('  sudo mesh start                  start proxy in background')
-  console.error('  sudo mesh start --config <path>  use a specific config file')
-  console.error('  sudo mesh stop                   stop the background proxy')
-  console.error('  mesh status                      show running services')
-  console.error('  sudo mesh route                  start proxy in foreground (debug)')
+  console.error('  mesh init                       create mesh.yml in current directory')
+  console.error('  mesh start                      start proxy in background')
+  console.error('  mesh start --config <path>      use a specific config file')
+  console.error('  mesh stop                       stop the background proxy')
+  console.error('  mesh status                     show running services')
+  console.error('  mesh route                      start proxy in foreground (debug)')
   process.exit(1)
 }
 
-if (process.getuid?.() !== 0) {
-  console.error('mesh: requires sudo to write /etc/hosts and bind ports 80/443')
-  console.error('      both are cleaned up automatically on exit')
-  console.error('      sudo mesh route')
-  process.exit(1)
-}
+autoSudo()
 
 // ── Load config ───────────────────────────────────────────────────────────────
 
