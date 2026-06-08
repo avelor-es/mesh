@@ -208,7 +208,11 @@ autoSudo()
     }
   }
 
-  const serviceManager = startServices(managed)
+  const serviceManager = startServices(managed, {
+    onPortChange(name, actualPort) {
+      services[name] = actualPort
+    },
+  })
 
   writeHosts(services)
 

@@ -18,7 +18,16 @@ export function findFreePort() {
   })
 }
 
-export function startServices(managed) {
+// Detects a localhost URL in a log line and returns the port number, or null.
+// Matches patterns like: http://localhost:4321  or  http://127.0.0.1:4321
+const LOCAL_URL_RE = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]|::1):(\d+)/
+
+function detectPort(line) {
+  const m = LOCAL_URL_RE.exec(line)
+  return m ? parseInt(m[1], 10) : null
+}
+
+export function startServices(managed, { onPortChange } = {}) {
   // managed: { [name]: { command: string, port: number } }
   if (!Object.keys(managed).length) return { stop() {} }
 
@@ -31,21 +40,43 @@ export function startServices(managed) {
     process.stdout.write(`  ${DIM}${time}${RESET}  ${CYAN}${name}${RESET}  ${DIM}│${RESET} ${line}\n`)
   }
 
-  function launch(name, command, port, restartCount = 0, startedAt = Date.now()) {
+  function launch(name, command, assignedPort, restartCount = 0, startedAt = Date.now()) {
     const child = spawn(command, [], {
-      env:   { ...process.env, PORT: String(port), HOST: '127.0.0.1' },
+      env:   { ...process.env, PORT: String(assignedPort) },
       shell: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
     children.set(name, child)
 
-    let buffer = ''
+    let activePort    = assignedPort
+    let portConfirmed = false
+    let buffer        = ''
+
     function flush(chunk) {
       buffer += String(chunk)
       const lines = buffer.split('\n')
       buffer = lines.pop()
-      for (const line of lines) logLine(name, line)
+      for (const line of lines) {
+        logLine(name, line)
+        // If the process started on a different port than we assigned,
+        // update the routing table so the proxy reaches the right server.
+        if (!portConfirmed) {
+          const detected = detectPort(line)
+          if (detected) {
+            portConfirmed = true
+            if (detected !== activePort) {
+              activePort = detected
+              const time = new Date().toTimeString().slice(0, 8)
+              console.log(
+                `  ${DIM}${time}${RESET}  ${YELLOW}${name}${RESET}  ` +
+                `${DIM}→ :${detected} (ignored PORT=${assignedPort})${RESET}`
+              )
+              onPortChange?.(name, detected)
+            }
+          }
+        }
+      }
     }
 
     child.stdout.on('data', flush)
@@ -67,13 +98,13 @@ export function startServices(managed) {
       )
 
       setTimeout(() => {
-        if (!stopping) launch(name, command, port, nextCount, Date.now())
+        if (!stopping) launch(name, command, assignedPort, nextCount, Date.now())
       }, delay)
     })
 
     const time = new Date().toTimeString().slice(0, 8)
     const label = restartCount === 0 ? CYAN : YELLOW
-    console.log(`  ${DIM}${time}${RESET}  ${label}${name}${RESET}  ${DIM}→ :${port}  $ ${command}${RESET}`)
+    console.log(`  ${DIM}${time}${RESET}  ${label}${name}${RESET}  ${DIM}→ :${assignedPort}  $ ${command}${RESET}`)
   }
 
   for (const [name, { command, port }] of Object.entries(managed)) {
